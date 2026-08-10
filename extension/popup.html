@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博 Evernote 本機收件匣</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { width: 330px; margin: 0; padding: 18px; color: #1f2328; background: #fff; }
+    h1 { margin: 0 0 5px; font-size: 17px; }
+    .sub { margin: 0 0 14px; color: #656d76; font-size: 12px; }
+    .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+    .count { padding: 10px 7px; border-radius: 9px; background: #f6f8fa; text-align: center; }
+    .number { display: block; font-size: 19px; font-weight: 700; }
+    .label { color: #656d76; font-size: 11px; }
+    button { width: 100%; margin: 0 0 8px; border: 1px solid #d0d7de; border-radius: 8px; padding: 9px 10px; background: #fff; color: #24292f; cursor: pointer; font-weight: 600; }
+    button.primary { border-color: #008f26; background: #00a82d; color: #fff; }
+    button:disabled { cursor: wait; opacity: .55; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    #message { min-height: 34px; margin: 4px 0 0; color: #57606a; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+    #message.error { color: #b42318; }
+    .path { overflow-wrap: anywhere; color: #8c959f; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <h1>微博 Evernote 本機收件匣</h1>
+  <p class="sub">乾淨文字、原圖與可下載影片，先本機保存再增量匯入。</p>
+  <div class="counts">
+    <div class="count"><span class="number" id="queued">—</span><span class="label">待同步</span></div>
+    <div class="count"><span class="number" id="exported">—</span><span class="label">已匯出</span></div>
+    <div class="count"><span class="number" id="total">—</span><span class="label">總計</span></div>
+  </div>
+  <button class="primary" id="sync">同步新增到 Evernote</button>
+  <div class="row">
+    <button id="reopen">重開最近 ENEX</button>
+    <button id="folder">打開本機資料</button>
+  </div>
+  <button id="choose">選擇暫存資料夾…</button>
+  <div id="message">正在連接本機收件匣…</div>
+  <div class="path" id="path"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
