@@ -6,13 +6,20 @@ async function loadConfig() {
   return response.json();
 }
 
-async function callBridge(path, method = "GET", body) {
+async function callBridge(path, method = "GET", body, timeoutMs = 0) {
   const config = await loadConfig();
-  if (!config.bridgeToken) throw new Error("尚未完成安裝，請先執行 install.command。");
+  if (!config.bridgeToken) throw new Error("尚未完成安裝，請先執行對應平台的安裝程式。");
+  const controller = timeoutMs ? new AbortController() : null;
+  let timedOut = false;
+  const timer = timeoutMs ? setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs) : null;
   let response;
   try {
     response = await fetch(`${config.bridgeUrl}${path}`, {
       method,
+      signal: controller?.signal,
       headers: {
         "Content-Type": "application/json",
         "X-Inbox-Token": config.bridgeToken
@@ -20,7 +27,10 @@ async function callBridge(path, method = "GET", body) {
       body: method === "POST" ? JSON.stringify(body || {}) : undefined
     });
   } catch (_error) {
-    throw new Error("無法連接本機收件匣，請重新執行 install.command 或檢查橋接器是否正在運行。");
+    if (timedOut) throw new Error("資料夾選擇逾時；請重新打開面板後再試一次。");
+    throw new Error("無法連接本機收件匣，請重新執行對應平台的安裝程式或檢查橋接器是否正在運行。");
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.message || `本機橋接器回傳 HTTP ${response.status}`);
@@ -35,7 +45,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     SYNC_EVERNOTE: () => callBridge("/sync", "POST"),
     REOPEN_LATEST: () => callBridge("/reopen-latest", "POST"),
     OPEN_INBOX: () => callBridge("/open-folder", "POST"),
-    CHOOSE_ARCHIVE: () => callBridge("/choose-archive", "POST")
+    CHOOSE_ARCHIVE: () => callBridge("/choose-archive", "POST", {}, 65000)
   };
   const task = tasks[message.type];
   if (!task) return false;

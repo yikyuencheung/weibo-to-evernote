@@ -36,7 +36,8 @@ async function refresh(message) {
   elements.total.textContent = data.total;
   elements.path.textContent = data.archiveDir;
   elements.sync.disabled = data.queued === 0;
-  show(message || (data.queued ? `有 ${data.queued} 條微博待同步。` : "目前沒有待同步微博。"));
+  elements.choose.disabled = Boolean(data.pickerBusy);
+  show(message || (data.pickerBusy ? "資料夾選擇視窗已開啟。" : (data.queued ? `有 ${data.queued} 條微博待同步。` : "目前沒有待同步微博。")));
 }
 
 async function perform(type, working) {
@@ -48,12 +49,12 @@ async function perform(type, working) {
     busy(false);
     return;
   }
-  await refresh(response.payload.message);
   busy(false);
+  await refresh(response.payload.message);
 }
 
 elements.sync.addEventListener("click", () => perform("SYNC_EVERNOTE", "正在生成增量 ENEX 並交給 Evernote…"));
 elements.reopen.addEventListener("click", () => perform("REOPEN_LATEST", "正在打開最近一批 ENEX…"));
 elements.folder.addEventListener("click", () => perform("OPEN_INBOX", "正在打開本機收件匣…"));
-elements.choose.addEventListener("click", () => perform("CHOOSE_ARCHIVE", "請在 macOS 視窗中選擇空資料夾或既有收件匣…"));
+elements.choose.addEventListener("click", () => perform("CHOOSE_ARCHIVE", "請在系統視窗中選擇空資料夾或既有收件匣…"));
 refresh();
