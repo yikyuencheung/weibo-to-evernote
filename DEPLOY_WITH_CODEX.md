@@ -1,18 +1,18 @@
-# 交給 Codex 的部署任務
+# 交給 Codex 的雙平台部署任務
 
-將整個 `weibo-to-evernote` 專案資料夾交給新 Mac 上的 Codex，並把下面這段話直接發給它：
+將整個 `weibo-to-evernote` 專案資料夾交給 macOS 或 Windows 電腦上的 Codex，並把下面這段話直接發給它：
 
 ```text
-請幫我在這台 Mac 部署「微博 Evernote 本機收件匣」。
+請幫我在這台電腦部署「微博 Evernote 本機收件匣」。
 
 先完整閱讀 DEPLOY_WITH_CODEX.md 與 README.md，再執行下列工作：
-1. 檢查 macOS、Evernote 桌面版、Google Chrome 與 Python 3 是否可用。
+1. 確認目前是受支援的 macOS 或 Windows，並檢查 Evernote 桌面版、Google Chrome 與 Python 3 是否可用。
 2. 先執行 tests/test_inbox_bridge.py、Python 與 JavaScript 語法檢查，不要跳過失敗。
 3. 確認 extension/config.json 尚未存在；config.example.json 的 bridgeToken 必須為空。不要從舊電腦複製 token。
-4. 執行 install.command 等價的非互動安裝，資料目錄使用 ~/Documents/Weibo Evernote Inbox。
-5. 檢查 LaunchAgent、本機 127.0.0.1:38419 狀態端點和 Evernote 偵測結果。不得輸出或回傳 token。
-6. 協助我在 Chrome 載入 extension 資料夾。若 chrome://extensions 受自動化安全限制，明確告訴我需要親自完成的最少步驟，並在 Finder 顯示正確資料夾。
-7. 擴充功能載入後，在微博頁面驗證「存入收件匣」按鈕、1.1.3 面板狀態、新版紅橙大象圖示與「選擇暫存資料夾…」按鈕；測試時不要保存、下載影片或同步真實微博，除非我另行確認。
+4. 執行目前平台安裝程式的等價非互動安裝，資料目錄使用使用者 Documents 內的 Weibo Evernote Inbox。
+5. 檢查 macOS LaunchAgent 或 Windows 使用者啟動器、本機 127.0.0.1:38419 狀態端點和 Evernote 偵測結果。不得輸出或回傳 token。
+6. 協助我在 Chrome 載入 extension 資料夾。若 chrome://extensions 受自動化安全限制，明確告訴我需要親自完成的最少步驟，並在 Finder 或檔案總管顯示正確資料夾。
+7. 擴充功能載入後，在微博頁面驗證「存入收件匣」按鈕、1.3.0 面板狀態、紅橙大象圖示與原生 `IFileOpenDialog`「選擇暫存資料夾…」按鈕；測試時不要保存、下載影片或同步真實微博，除非我另行確認。
 8. 最後只報告安裝結果、驗證結果、本機資料位置，以及仍需我親自完成的事項。
 
 不要改用 Email to Evernote，不要硬編碼我的帳戶資料，也不要刪除任何舊收件匣資料。
@@ -30,11 +30,29 @@ node --check extension/content.js
 node --check extension/popup.js
 zsh -n install.command
 zsh -n uninstall.command
+zsh -n platforms/macos/install.sh
+zsh -n platforms/macos/uninstall.sh
+```
+
+Windows 另做 PowerShell 語法檢查：
+
+```powershell
+$null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\platforms\windows\install.ps1), [ref]$null, [ref]$null)
+$null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\platforms\windows\uninstall.ps1), [ref]$null, [ref]$null)
+```
+
+Windows 另須確認原生選擇器可以編譯：
+
+```powershell
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" `
+  /nologo /target:winexe /optimize+ `
+  /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
+  .\platforms\windows\windows_folder_picker.cs
 ```
 
 如果系統沒有 Node.js，JavaScript 語法檢查可以使用 Codex 內建 Node runtime；這不影響擴充功能本身運行。
 
-非互動安裝命令：
+macOS 非互動安裝命令：
 
 ```bash
 python3 bridge/inbox_bridge.py install \
@@ -42,13 +60,21 @@ python3 bridge/inbox_bridge.py install \
   --archive-dir "$HOME/Documents/Weibo Evernote Inbox"
 ```
 
-安裝後，從 `~/Library/Application Support/WeiboEvernoteInbox/config.json` 讀取 token，只用於向本機狀態端點發送驗證請求。檢查輸出不得包含 token。
+Windows 非互動安裝命令：
+
+```powershell
+python .\bridge\inbox_bridge.py install `
+  --extension-dir .\extension `
+  --archive-dir "$env:USERPROFILE\Documents\Weibo Evernote Inbox"
+```
+
+安裝後，設定檔位於 macOS 的 `~/Library/Application Support/WeiboEvernoteInbox/config.json`，或 Windows 的 `%LOCALAPPDATA%\WeiboEvernoteInbox\config.json`。讀取 token 時只用於向本機狀態端點發送驗證請求；檢查輸出不得包含 token。
 
 Chrome 的未封裝擴充功能必須選擇本包內的 `extension` 資料夾。不要選擇 ZIP、專案根目錄或 `manifest.json` 單一檔案。
 
 ## 安全邊界
 
-- 安裝時必須為新 Mac 生成新的隨機 token。
+- 安裝時必須為每台新電腦生成新的隨機 token。
 - 橋接器只應監聽 `127.0.0.1:38419`。
 - 不得將微博 cookie、Evernote 憑證或 Email to Evernote 地址寫入套件。
 - 不得用 UI 座標自動化代替 Chrome 的安全確認。

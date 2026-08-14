@@ -11,6 +11,8 @@ extension/config.json
 *.sqlite-wal
 *.enex
 bridge.log
+platforms/windows/windows_folder_picker.exe
+platforms/windows/windows_folder_picker.new.exe
 raw/
 posts/
 assets/

@@ -1,15 +1,15 @@
 # Weibo to Evernote
 
-將微博文字、圖片、影片與原始連結乾淨保存到本機，並透過 ENEX 增量匯入 Evernote 的 macOS Chrome 擴充功能。全程不使用 Email to Evernote、Evernote API 或 Web Clipper。
+將微博文字、圖片、影片與原始連結乾淨保存到本機，並透過 ENEX 增量匯入 Evernote 的 macOS、Windows Chrome 擴充功能。全程不使用 Email to Evernote、Evernote API 或 Web Clipper。
 
-目前版本：1.1.3。系統需求：macOS、Google Chrome、Evernote 桌面版及 Python 3.9 以上版本。
+目前版本：1.3.0。系統需求：macOS 或 Windows、Google Chrome、Evernote 桌面版及 Python 3.9 以上版本。Windows 安裝時另使用系統內建的 .NET Framework 4.x 編譯原生資料夾選擇器。
 
 如果要換 Mac 並交給 Codex 重新部署，請先閱讀 `DEPLOY_WITH_CODEX.md`。如需攜帶既有微博、圖片、影片與同步歷史，另見 `MIGRATE_DATA.md`。
 
 工作流程：
 
 1. 在微博卡片按「存入收件匣」。
-2. 乾淨正文、精確時間、原始連結、原圖、可下載影片、JSON 與 Markdown 立即保存到 Mac。
+2. 乾淨正文、精確時間、原始連結、原圖、可下載影片、JSON 與 Markdown 立即保存到本機。
 3. 點 Chrome 工具列中的擴充功能，再按「同步新增到 Evernote」。
 4. 工具只把新增項目生成為 ENEX，並交給 Evernote 桌面版匯入。
 
@@ -19,18 +19,50 @@
 
 ## 一次安裝
 
-1. 雙擊 `install.command`，按提示完成本機橋接器安裝。
-2. 在 Chrome 打開 `chrome://extensions`。
-3. 開啟右上角「開發人員模式」。
-4. 點「載入未封裝項目」，選擇本資料夾內的 `extension`。
-5. 重新載入已打開的微博頁面。
+### macOS
 
-安裝程式會生成一枚只供本機 `127.0.0.1` 使用的隨機 token，並寫入擴充功能設定。若資料夾被移動、重新下載或 token 不一致，重新執行 `install.command`，再到 `chrome://extensions` 點一次「重新載入」。
+1. 雙擊 `install.command`，按提示完成本機橋接器安裝。
+
+### Windows
+
+1. 雙擊 `install-windows.cmd`。預設資料位置是使用者「文件」資料夾內的 `Weibo Evernote Inbox`。
+2. 若畫面提示找不到 Python，先安裝 Python 3.9 或更新版本，再重新執行。
+
+Windows 會遵循系統的「文件」已知資料夾位置；若「文件」已重新導向 OneDrive，預設收件匣也會位於 OneDrive。要改用其它位置，可在 PowerShell 執行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\platforms\windows\install.ps1 -ArchiveDir "D:\Weibo Evernote Inbox"
+```
+
+### 載入 Chrome 擴充功能
+
+1. 在 Chrome 打開 `chrome://extensions`。
+2. 開啟右上角「開發人員模式」。
+3. 點「載入未封裝項目」，選擇本資料夾內的 `extension`。
+4. 重新載入已打開的微博頁面。
+
+安裝程式會生成一枚只供本機 `127.0.0.1` 使用的隨機 token，並寫入擴充功能設定。若專案資料夾被移動、重新下載或 token 不一致，重新執行對應平台的安裝程式，再到 `chrome://extensions` 點一次「重新載入」。
+
+## 專案結構
+
+```text
+weibo-to-evernote/
+├── platforms/
+│   ├── macos/          macOS 安裝與卸載實作
+│   └── windows/        Windows 安裝、卸載與原生選擇器
+├── bridge/             macOS、Windows 共用本機橋接器
+├── extension/          共用 Chrome 擴充功能
+├── tests/              共用回歸測試
+├── install.command     macOS 相容啟動器
+└── install-windows.cmd Windows 相容啟動器
+```
+
+平台專屬檔案不再混放在共享程式目錄；詳細對照見 `platforms/README.md`。
 
 預設資料位置：
 
 ```text
-~/Documents/Weibo Evernote Inbox/
+Documents/Weibo Evernote Inbox/
 ├── inbox.sqlite       去重、待同步與批次狀態
 ├── raw/               每條微博的完整 JSON
 ├── posts/             可閱讀的 Markdown
@@ -44,7 +76,7 @@
 - 同步：點 Chrome 工具列裡的擴充功能圖示，確認「待同步」數量，再按「同步新增到 Evernote」。
 - 查檔：面板內按「打開本機資料」。
 - 重試：如果 Evernote 沒有顯示匯入流程，按「重開最近 ENEX」。
-- 改位置：面板內按「選擇暫存資料夾…」，再於 macOS 視窗選擇空資料夾或既有微博收件匣。切換後舊資料仍留在原位置，不會自動搬移或刪除。
+- 改位置：面板內按「選擇暫存資料夾…」，再於系統視窗選擇空資料夾或既有微博收件匣。切換後舊資料仍留在原位置，不會自動搬移或刪除。
 
 Evernote 桌面版會把 ENEX 匯入成新的匯入筆記本；這是 Evernote 的 ENEX 匯入行為。筆記保留微博文字、原文連結、時間、作者與圖片，並且只附加 `weibo` 一個標籤。匯入完成後可在 Evernote 內整批移到指定筆記本。
 
@@ -57,19 +89,37 @@ Evernote 桌面版會把 ENEX 匯入成新的匯入筆記本；這是 Evernote �
 - 微博 DOM 改版後，擴充功能的選擇器可能需要更新。
 - 「同步」代表生成增量 ENEX 並交給 Evernote，不會刪除微博收藏，也不會修改微博帳號。
 
+## 背景啟動方式
+
+- macOS 使用使用者層級的 LaunchAgent。
+- Windows 使用使用者「啟動」資料夾內的隱藏啟動器，不需要管理員權限。
+
+兩個平台都只在目前登入的使用者工作階段啟動橋接器。
+
 ## 卸載
 
-雙擊 `uninstall.command` 停止本機橋接器，再到 `chrome://extensions` 移除擴充功能。卸載不刪除本機收件匣資料。
+- macOS：雙擊 `uninstall.command`。
+- Windows：雙擊 `uninstall-windows.cmd`。
+
+接著到 `chrome://extensions` 移除擴充功能。卸載不刪除本機收件匣資料。
 
 ## 隱私與安全
 
 - 服務只監聽 `127.0.0.1:38419`，不對區域網路或網際網路開放。
 - 請求必須帶有安裝時生成的隨機 token。
 - 不保存微博 cookie、Evernote 密碼、API token 或 Email to Evernote 地址。
-- 外部下載只包括微博圖片、影片頁與影片檔 URL；唯一的 Evernote 動作是由 macOS 打開本機 ENEX。
+- 外部下載只包括微博圖片、影片頁與影片檔 URL；唯一的 Evernote 動作是由作業系統打開本機 ENEX 並交給 Evernote 桌面版。
 - 媒體下載只接受微博與新浪的圖片、影片網域，避免頁面內容誘導橋接器存取任意網路位置。
 
-## 1.1 版排版
+## 版本說明
+
+1.3.0 將專案重整為 `platforms/macos`、`platforms/windows` 與共享核心三個部分。Windows 資料夾選擇器由 PowerShell WinForms `FolderBrowserDialog` 改為獨立的原生 GUI 輔助程式，直接使用 Windows `IFileOpenDialog` 與 `FOS_PICKFOLDERS`。安裝程式會在本機編譯輔助程式；它會在建立視窗前接到目前的 Windows 輸入桌面，並提供可見的擁有者視窗、工作列入口和前景提示，不會繼承常駐橋接器的隱藏狀態。選擇、取消與錯誤使用不同退出碼，Python 橋接器仍保留單例鎖和逾時保護。
+
+1.2.1 修正 Windows 資料夾選擇視窗可能藏在 Chrome 後方而使面板持續等待的問題。選擇器現在以前景置頂視窗顯示、同一時間只允許一個實例，並由橋接器與擴充功能共同限制等待時間，逾時後可直接重試。
+
+1.2.0 新增 Windows 安裝、使用者登入後自動啟動、原生資料夾選擇器、Evernote ENEX 開啟與卸載支援，同時保留原有 macOS 流程。
+
+### 1.1 版排版
 
 新暫存微博在 Markdown 與 Evernote 中採用固定順序：
 
