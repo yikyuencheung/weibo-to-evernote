@@ -230,6 +230,107 @@ class InboxBridgeTests(unittest.TestCase):
         with self.assertRaises(bridge.InboxError):
             bridge.validate_archive_target(target)
 
+    def test_archive_selector_rejects_filesystem_root(self) -> None:
+        root = Path(self.temporary.name).resolve()
+        while root.parent != root:
+            root = root.parent
+        with self.assertRaises(bridge.InboxError):
+            bridge.validate_archive_target(root)
+
+    def test_windows_launcher_quotes_paths(self) -> None:
+        text = bridge.windows_launcher_text(
+            Path(r"C:\Program Files\Python\python.exe"),
+            Path(r"C:\Users\Test User\AppData\Local\WeiboEvernoteInbox\inbox_bridge.py"),
+            Path(r"C:\Users\Test User\AppData\Local\WeiboEvernoteInbox\config.json"),
+        )
+        self.assertIn('""C:\\Program Files\\Python\\python.exe""', text)
+        self.assertIn('""C:\\Users\\Test User\\AppData\\Local\\WeiboEvernoteInbox\\config.json""', text)
+        self.assertIn(', 0, False', text)
+
+    def test_windows_runtime_uses_current_python_not_store_alias(self) -> None:
+        expected = Path(r"C:\Tools\Bundled Python\python.exe").resolve()
+        with mock.patch.object(bridge.sys, "platform", "win32"), mock.patch.object(
+            bridge.sys,
+            "executable",
+            str(expected),
+        ), mock.patch.object(bridge.shutil, "which", return_value=r"C:\Users\Test\WindowsApps\python3.exe"):
+            self.assertEqual(bridge.runtime_python_path(), expected)
+
+    def test_folder_picker_timeout_returns_recoverable_error(self) -> None:
+        picker = Path(self.temporary.name) / "windows_folder_picker.exe"
+        picker.write_bytes(b"test")
+        with mock.patch.object(bridge.sys, "platform", "win32"), mock.patch.object(
+            bridge,
+            "windows_picker_executable",
+            return_value=picker,
+        ), mock.patch.object(
+            bridge.subprocess,
+            "run",
+            side_effect=bridge.subprocess.TimeoutExpired(str(picker), bridge.FOLDER_PICKER_TIMEOUT_SECONDS),
+        ):
+            with self.assertRaisesRegex(bridge.InboxError, "資料夾選擇逾時"):
+                bridge.choose_archive_folder(self.archive)
+
+    def test_native_folder_picker_cancel_is_not_an_error(self) -> None:
+        picker = Path(self.temporary.name) / "windows_folder_picker.exe"
+        picker.write_bytes(b"test")
+        completed = bridge.subprocess.CompletedProcess([str(picker)], 2, stdout="", stderr="")
+        with mock.patch.object(bridge.sys, "platform", "win32"), mock.patch.object(
+            bridge,
+            "windows_picker_executable",
+            return_value=picker,
+        ), mock.patch.object(bridge.subprocess, "run", return_value=completed):
+            self.assertIsNone(bridge.choose_archive_folder(self.archive))
+
+    def test_missing_native_folder_picker_requests_reinstall(self) -> None:
+        missing = Path(self.temporary.name) / "missing-picker.exe"
+        with mock.patch.object(bridge.sys, "platform", "win32"), mock.patch.object(
+            bridge,
+            "windows_picker_executable",
+            return_value=missing,
+        ):
+            with self.assertRaisesRegex(bridge.InboxError, "請重新執行安裝程式"):
+                bridge.choose_archive_folder(self.archive)
+
+    def test_only_one_folder_picker_can_run(self) -> None:
+        self.service.config["dryRun"] = False
+        self.service.picker_lock.acquire()
+        try:
+            self.assertTrue(self.service.status()["pickerBusy"])
+            with self.assertRaisesRegex(bridge.InboxError, "資料夾選擇視窗已開啟"):
+                self.service.choose_archive()
+        finally:
+            self.service.picker_lock.release()
+
+    def test_windows_evernote_detection(self) -> None:
+        local_app_data = Path(self.temporary.name) / "Local"
+        executable = local_app_data / "Programs" / "Evernote" / "Evernote.exe"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"")
+        with mock.patch.object(bridge.sys, "platform", "win32"), mock.patch.dict(
+            bridge.os.environ,
+            {"LOCALAPPDATA": str(local_app_data)},
+            clear=False,
+        ):
+            self.assertEqual(bridge.evernote_path(), executable)
+
+    def test_authenticated_shutdown_stops_server(self) -> None:
+        server = bridge.Server(("127.0.0.1", 0), self.service)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/shutdown",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "X-Inbox-Token": "test-token"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+        self.assertTrue(payload["ok"])
+        thread.join(timeout=5)
+        server.server_close()
+        self.assertFalse(thread.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()
