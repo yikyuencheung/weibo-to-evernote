@@ -5,9 +5,11 @@
 ```text
 platforms/
 ├── macos/
+│   ├── README.md
 │   ├── install.sh
 │   └── uninstall.sh
 └── windows/
+    ├── README.md
     ├── install.cmd
     ├── install.ps1
     ├── uninstall.cmd
