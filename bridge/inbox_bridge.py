@@ -29,10 +29,11 @@ import urllib.parse
 import urllib.request
 
 
-VERSION = "1.1.3"
+VERSION = "1.3.0"
 LABEL = "com.local.weibo-evernote-inbox.bridge"
 ENEX_TAG = "weibo"
 DEFAULT_PORT = 38419
+FOLDER_PICKER_TIMEOUT_SECONDS = 60
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 80 * 1024 * 1024
@@ -47,6 +48,9 @@ class InboxError(RuntimeError):
 
 
 def app_support_dir() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return base / "WeiboEvernoteInbox"
     return Path.home() / "Library" / "Application Support" / "WeiboEvernoteInbox"
 
 
@@ -60,6 +64,85 @@ def config_path() -> Path:
 
 def launch_agent_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+def windows_startup_path() -> Path:
+    base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    return base / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "WeiboEvernoteInbox.vbs"
+
+
+def windows_picker_source_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "platforms" / "windows" / "windows_folder_picker.cs"
+
+
+def windows_picker_executable() -> Path:
+    return Path(__file__).resolve().with_name("windows_folder_picker.exe")
+
+
+def windows_csharp_compiler() -> Path:
+    windows_dir = Path(os.environ.get("WINDIR") or r"C:\Windows")
+    candidates = [
+        windows_dir / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe",
+        windows_dir / "Microsoft.NET" / "Framework" / "v4.0.30319" / "csc.exe",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    raise InboxError("找不到 Windows .NET Framework C# 編譯器，無法安裝原生資料夾選擇器")
+
+
+def build_windows_picker(support: Path) -> tuple[Path, Path]:
+    source = windows_picker_source_path()
+    if not source.is_file():
+        raise InboxError(f"找不到 Windows 資料夾選擇器原始碼：{source}")
+    output = support / "windows_folder_picker.new.exe"
+    compiler = windows_csharp_compiler()
+    result = subprocess.run(
+        [
+            str(compiler),
+            "/nologo",
+            "/target:winexe",
+            "/optimize+",
+            f"/out:{output}",
+            "/reference:System.Windows.Forms.dll",
+            "/reference:System.Drawing.dll",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 or not output.is_file():
+        raise InboxError(f"無法編譯 Windows 資料夾選擇器：{clean_line(result.stderr or result.stdout, 1000)}")
+    return source, output
+
+
+def evernote_path() -> Path | None:
+    if sys.platform == "darwin":
+        candidate = Path("/Applications/Evernote.app")
+        try:
+            return candidate if candidate.exists() else None
+        except OSError:
+            return None
+    if sys.platform == "win32":
+        candidates = []
+        if os.environ.get("LOCALAPPDATA"):
+            candidates.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Evernote" / "Evernote.exe")
+        for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+            if os.environ.get(variable):
+                candidates.append(Path(os.environ[variable]) / "Evernote" / "Evernote.exe")
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+    return None
 
 
 def sanitize_unicode(value: Any) -> Any:
@@ -511,7 +594,7 @@ def prepare_archive(path: Path) -> None:
 
 def validate_archive_target(path: Path) -> Path:
     target = path.expanduser().resolve()
-    if target in {Path("/"), Path.home().resolve()}:
+    if target.parent == target or target == Path.home().resolve():
         raise InboxError("請選擇專用資料夾，不要直接選擇磁碟根目錄或個人主目錄")
     if target.exists():
         allowed = {"inbox.sqlite", "raw", "posts", "assets", "exports", ".DS_Store"}
@@ -522,18 +605,78 @@ def validate_archive_target(path: Path) -> Path:
 
 
 def choose_archive_folder(current: Path) -> Path | None:
+    if sys.platform == "win32":
+        picker = windows_picker_executable()
+        if not picker.is_file():
+            raise InboxError("找不到 Windows 原生資料夾選擇器，請重新執行安裝程式")
+        initial = current if current.exists() else current.parent
+        try:
+            result = subprocess.run(
+                [str(picker), "--initial", str(initial)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=FOLDER_PICKER_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise InboxError("資料夾選擇逾時；選擇器已關閉，請重新操作") from error
+        if result.returncode == 2:
+            return None
+        if result.returncode != 0:
+            raise InboxError(f"無法打開資料夾選擇器：{clean_line(result.stderr or result.stdout, 500)}")
+        selected = result.stdout.strip()
+        if not selected:
+            raise InboxError("Windows 原生資料夾選擇器沒有回傳路徑")
+        return Path(selected)
+    if sys.platform != "darwin":
+        raise InboxError("此作業系統不支援圖形化資料夾選擇器")
     escaped_current = str(current.parent).replace("\\", "\\\\").replace('"', '\\"')
     script = (
         'set chosenFolder to choose folder with prompt "選擇微博本機收件匣（請使用空資料夾或既有收件匣）" '
         f'default location POSIX file "{escaped_current}"\n'
         'POSIX path of chosenFolder'
     )
-    result = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=FOLDER_PICKER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise InboxError("資料夾選擇逾時；選擇器已關閉，請重新操作") from error
     if result.returncode != 0:
         if "-128" in result.stderr or "User canceled" in result.stderr:
             return None
         raise InboxError(f"無法打開資料夾選擇器：{clean_line(result.stderr or result.stdout, 500)}")
     return Path(result.stdout.strip())
+
+
+def open_file(path: Path) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return
+        if sys.platform == "darwin":
+            result = subprocess.run(["/usr/bin/open", str(path)], capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                raise InboxError(clean_line(result.stderr or result.stdout, 500))
+            return
+    except OSError as error:
+        raise InboxError(clean_line(error, 500)) from error
+    raise InboxError("此作業系統不支援打開檔案")
+
+
+def open_enex(path: Path) -> None:
+    if sys.platform == "darwin":
+        result = subprocess.run(["/usr/bin/open", "-a", "Evernote", str(path)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise InboxError(f"無法交給 Evernote：{clean_line(result.stderr or result.stdout, 500)}")
+        return
+    open_file(path)
 
 
 class InboxService:
@@ -544,6 +687,7 @@ class InboxService:
         prepare_archive(self.archive)
         self.db_path = self.archive / "inbox.sqlite"
         self.lock = threading.Lock()
+        self.picker_lock = threading.Lock()
 
     @property
     def token(self) -> str:
@@ -563,7 +707,8 @@ class InboxService:
             "exported": int(row["exported"] or 0),
             "latestBatch": dict(latest) if latest else None,
             "archiveDir": str(self.archive),
-            "evernoteAvailable": Path("/Applications/Evernote.app").exists(),
+            "evernoteAvailable": evernote_path() is not None,
+            "pickerBusy": self.picker_lock.locked(),
         }
 
     def capture(self, raw_clip: Any) -> dict[str, Any]:
@@ -621,9 +766,7 @@ class InboxService:
             output = self.archive / "exports" / f"weibo-inbox-{batch_id}.enex"
             build_enex(rows, output)
             if not bool(self.config.get("dryRun")):
-                opened = subprocess.run(["/usr/bin/open", "-a", "Evernote", str(output)], capture_output=True, text=True, check=False)
-                if opened.returncode != 0:
-                    raise InboxError(f"無法交給 Evernote：{clean_line(opened.stderr or opened.stdout, 500)}")
+                open_enex(output)
             now = iso_now()
             connection.execute(
                 "INSERT INTO batches (id, enex_path, note_count, created_at, opened_at) VALUES (?, ?, ?, ?, ?)",
@@ -645,14 +788,12 @@ class InboxService:
         if not path.is_file():
             raise InboxError("最近一批 ENEX 已不存在")
         if not bool(self.config.get("dryRun")):
-            result = subprocess.run(["/usr/bin/open", "-a", "Evernote", str(path)], capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                raise InboxError(f"無法重新打開 ENEX：{clean_line(result.stderr or result.stdout, 500)}")
+            open_enex(path)
         return {"ok": True, "message": "已重新交給 Evernote", "path": str(path), "count": int(row["note_count"])}
 
     def open_folder(self) -> dict[str, Any]:
         if not bool(self.config.get("dryRun")):
-            subprocess.run(["/usr/bin/open", str(self.archive)], capture_output=True, check=False)
+            open_file(self.archive)
         return {"ok": True, "message": "已打開本機收件匣"}
 
     def switch_archive(self, selected: Path) -> dict[str, Any]:
@@ -683,10 +824,15 @@ class InboxService:
     def choose_archive(self) -> dict[str, Any]:
         if bool(self.config.get("dryRun")):
             raise InboxError("乾跑模式不會打開資料夾選擇器")
-        selected = choose_archive_folder(self.archive)
-        if selected is None:
-            return {"ok": True, "cancelled": True, "message": "已取消選擇資料夾", "archiveDir": str(self.archive)}
-        return self.switch_archive(selected)
+        if not self.picker_lock.acquire(blocking=False):
+            raise InboxError("資料夾選擇視窗已開啟；請先完成或取消目前的選擇")
+        try:
+            selected = choose_archive_folder(self.archive)
+            if selected is None:
+                return {"ok": True, "cancelled": True, "message": "已取消選擇資料夾", "archiveDir": str(self.archive)}
+            return self.switch_archive(selected)
+        finally:
+            self.picker_lock.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -723,7 +869,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if not self.authorized():
-            self.send_json(401, {"ok": False, "message": "橋接器驗證失敗，請重新執行 install.command"})
+            self.send_json(401, {"ok": False, "message": "橋接器驗證失敗，請重新執行對應平台的安裝程式"})
             return
         if self.path == "/status":
             self.send_json(200, self.service.status())
@@ -741,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if not self.authorized():
-            self.send_json(401, {"ok": False, "message": "橋接器驗證失敗，請重新執行 install.command"})
+            self.send_json(401, {"ok": False, "message": "橋接器驗證失敗，請重新執行對應平台的安裝程式"})
             return
         try:
             payload = self.read_payload()
@@ -755,6 +901,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.service.open_folder()
             elif self.path == "/choose-archive":
                 result = self.service.choose_archive()
+            elif self.path == "/shutdown":
+                result = {"ok": True, "message": "橋接器正在停止"}
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
                 self.send_json(404, {"ok": False, "message": "找不到路徑"})
                 return
@@ -778,7 +927,7 @@ class Server(ThreadingHTTPServer):
 def serve(path: Path) -> None:
     config = read_config(path)
     if not str(config.get("token") or ""):
-        raise InboxError("Token 為空，請重新執行 install.command")
+        raise InboxError("Token 為空，請重新執行對應平台的安裝程式")
     service = InboxService(config, path)
     port = int(config.get("port") or DEFAULT_PORT)
     server = Server(("127.0.0.1", port), service)
@@ -791,17 +940,100 @@ def serve(path: Path) -> None:
         server.server_close()
 
 
+def windows_launcher_text(python_path: Path, bridge_path: Path, local_config: Path) -> str:
+    command = f'"{python_path}" "{bridge_path}" serve --config "{local_config}"'
+    escaped = command.replace('"', '""')
+    return f'Set shell = CreateObject("WScript.Shell")\r\nshell.Run "{escaped}", 0, False\r\n'
+
+
+def start_windows_bridge(python_path: Path, bridge_path: Path, local_config: Path, log_path: Path) -> None:
+    log_handle = log_path.open("a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            [str(python_path), str(bridge_path), "serve", "--config", str(local_config)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            close_fds=True,
+        )
+    finally:
+        log_handle.close()
+
+
+def runtime_python_path() -> Path:
+    if sys.platform == "win32":
+        return Path(sys.executable).resolve()
+    return Path(shutil.which("python3") or sys.executable).resolve()
+
+
+def request_bridge_shutdown(path: Path) -> None:
+    try:
+        config = read_config(path)
+        token = str(config.get("token") or "")
+        port = int(config.get("port") or DEFAULT_PORT)
+        if not token:
+            return
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/shutdown",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "X-Inbox-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2):
+            pass
+        for _ in range(20):
+            time.sleep(0.1)
+            try:
+                probe = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/status",
+                    headers={"X-Inbox-Token": token},
+                )
+                with urllib.request.urlopen(probe, timeout=0.2):
+                    pass
+            except (OSError, urllib.error.URLError):
+                break
+    except (InboxError, OSError, ValueError, urllib.error.URLError):
+        pass
+
+
+def wait_for_bridge(token: str, port: int = DEFAULT_PORT) -> None:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/status",
+        headers={"X-Inbox-Token": token},
+    )
+    last_error = ""
+    for _ in range(50):
+        try:
+            with urllib.request.urlopen(request, timeout=0.5) as response:
+                payload = json.load(response)
+            if payload.get("ok") and payload.get("version") == VERSION:
+                return
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            last_error = clean_line(error, 300)
+        time.sleep(0.1)
+    raise InboxError(f"橋接器啟動後未能通過狀態檢查：{last_error or '沒有回應'}")
+
+
 def install(extension_dir: Path, archive_dir: Path) -> None:
-    if sys.platform != "darwin":
-        raise InboxError("目前只支援 macOS")
+    if sys.platform not in {"darwin", "win32"}:
+        raise InboxError("目前只支援 macOS 與 Windows")
     if not (extension_dir / "manifest.json").is_file():
         raise InboxError(f"找不到 Chrome 擴充功能：{extension_dir}")
     support = app_support_dir()
     support.mkdir(parents=True, exist_ok=True)
+    picker_build: tuple[Path, Path] | None = None
+    if sys.platform == "win32":
+        picker_build = build_windows_picker(support)
+        request_bridge_shutdown(config_path())
     archive_dir.mkdir(parents=True, exist_ok=True)
     installed_bridge = support / "inbox_bridge.py"
     shutil.copy2(Path(__file__).resolve(), installed_bridge)
     installed_bridge.chmod(0o700)
+    if picker_build:
+        picker_source, picker_output = picker_build
+        shutil.copy2(picker_source, support / picker_source.name)
+        picker_output.replace(support / "windows_folder_picker.exe")
     token = secrets.token_urlsafe(32)
     config = {
         "version": VERSION,
@@ -814,7 +1046,8 @@ def install(extension_dir: Path, archive_dir: Path) -> None:
     }
     local_config = config_path()
     local_config.write_text(json_text(config), encoding="utf-8")
-    local_config.chmod(0o600)
+    if sys.platform == "darwin":
+        local_config.chmod(0o600)
     extension_config = {
         "bridgeUrl": f"http://127.0.0.1:{DEFAULT_PORT}",
         "bridgeToken": token,
@@ -823,40 +1056,57 @@ def install(extension_dir: Path, archive_dir: Path) -> None:
     (extension_dir / "config.json").write_text(json_text(extension_config), encoding="utf-8")
 
     log_path = support / "bridge.log"
-    python_path = shutil.which("python3") or sys.executable
-    agent = {
-        "Label": LABEL,
-        "ProgramArguments": [python_path, str(installed_bridge), "serve", "--config", str(local_config)],
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "StandardOutPath": str(log_path),
-        "StandardErrorPath": str(log_path),
-        "ProcessType": "Background",
-    }
-    plist = launch_agent_path()
-    plist.parent.mkdir(parents=True, exist_ok=True)
-    with plist.open("wb") as handle:
-        plistlib.dump(agent, handle)
-    domain = f"gui/{os.getuid()}"
-    subprocess.run(["/bin/launchctl", "bootout", domain, str(plist)], capture_output=True, check=False)
-    result = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(plist)], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise InboxError(f"無法啟動橋接器：{clean_line(result.stderr or result.stdout, 500)}")
+    python_path = runtime_python_path()
+    if sys.platform == "darwin":
+        agent = {
+            "Label": LABEL,
+            "ProgramArguments": [str(python_path), str(installed_bridge), "serve", "--config", str(local_config)],
+            "RunAtLoad": True,
+            "KeepAlive": True,
+            "StandardOutPath": str(log_path),
+            "StandardErrorPath": str(log_path),
+            "ProcessType": "Background",
+        }
+        plist = launch_agent_path()
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        with plist.open("wb") as handle:
+            plistlib.dump(agent, handle)
+        domain = f"gui/{os.getuid()}"
+        subprocess.run(["/bin/launchctl", "bootout", domain, str(plist)], capture_output=True, check=False)
+        result = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(plist)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise InboxError(f"無法啟動橋接器：{clean_line(result.stderr or result.stdout, 500)}")
+    else:
+        log_path.write_text("", encoding="utf-8")
+        startup = windows_startup_path()
+        startup.parent.mkdir(parents=True, exist_ok=True)
+        startup.write_text(windows_launcher_text(python_path, installed_bridge, local_config), encoding="utf-16")
+        start_windows_bridge(python_path, installed_bridge, local_config, log_path)
+    wait_for_bridge(token)
     print("本機收件匣已安裝並啟動。")
     print(f"本機資料：{archive_dir}")
     print(f"Chrome 擴充功能：{extension_dir}")
 
 
 def uninstall() -> None:
-    plist = launch_agent_path()
     stored_archive = default_archive_dir()
+    local_config = config_path()
     try:
-        stored_archive = Path(str(read_config(config_path()).get("archiveDir") or stored_archive))
+        stored_archive = Path(str(read_config(local_config).get("archiveDir") or stored_archive))
     except InboxError:
         pass
-    subprocess.run(["/bin/launchctl", "bootout", f"gui/{os.getuid()}", str(plist)], capture_output=True, check=False)
-    if plist.exists():
-        plist.unlink()
+    if sys.platform == "darwin":
+        plist = launch_agent_path()
+        subprocess.run(["/bin/launchctl", "bootout", f"gui/{os.getuid()}", str(plist)], capture_output=True, check=False)
+        if plist.exists():
+            plist.unlink()
+    elif sys.platform == "win32":
+        request_bridge_shutdown(local_config)
+        startup = windows_startup_path()
+        if startup.exists():
+            startup.unlink()
+    else:
+        raise InboxError("目前只支援 macOS 與 Windows")
     support = app_support_dir()
     if support.exists():
         shutil.rmtree(support)
@@ -876,6 +1126,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     args = parser().parse_args()
     try:
         if args.command == "serve":
